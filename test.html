@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js Match-3</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #222; }
+        canvas { display: block; }
+        #score {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: sans-serif;
+            font-size: 24px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="score">Score: 0</div>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // ===========================
+        // GAME CONFIGURATION
+        // ===========================
+        const CONFIG = {
+            rows: 8,
+            cols: 8,
+            tileSize: 1.2, // Physical size of the cubes
+            spacing: 1.3,  // Distance between coordinate centers
+            animSpeed: 0.15, // Movement speed factor (higher is faster)
+            colors: [0xff0000, 0x00ff00, 0x0000ff, 0xffff00, 0x00ffff, 0xff00ff]
+        };
+
+        let score = 0;
+        const scoreElement = document.getElementById('score');
+
+        // ===========================
+        // THREE.JS SETUP
+        // ===========================
+        const scene = new THREE.Scene();
+        
+        // Use Orthographic camera for a 2D grid view
+        const aspect = window.innerWidth / window.innerHeight;
+        const frustumSize = 12;
+        const camera = new THREE.OrthographicCamera(
+            frustumSize * aspect / -2,
+            frustumSize * aspect / 2,
+            frustumSize / 2,
+            frustumSize / -2,
+            0.1,
+            100
+        );
+        camera.position.set(0, 0, 10);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x222222);
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(5, 10, 7);
+        scene.add(dirLight);
+
+        // Shared Geometry for all gems
+        const gemGeometry = new THREE.BoxGeometry(CONFIG.tileSize, CONFIG.tileSize, CONFIG.tileSize);
+
+        // ===========================
+        // GAME STATE & DATA STRUCTURES
+        // ===========================
+        // The grid stores objects: { type: number, mesh: THREE.Mesh, isLocked: boolean }
+        let grid = Array.from({ length: CONFIG.cols }, () => Array(CONFIG.rows).fill(null));
+        
+        let selectedGem = null;
+        let isAnimating = false;
+
+        // Helper to convert grid coordinates (col, row) to world position (x, y, z)
+        function gridToWorld(col, row) {
+            const startX = -(CONFIG.cols * CONFIG.spacing) / 2 + CONFIG.spacing / 2;
+            const startY = (CONFIG.rows * CONFIG.spacing) / 2 - CONFIG.spacing / 2;
+            return new THREE.Vector3(
+                startX + col * CONFIG.spacing,
+                startY - row * CONFIG.spacing,
+                0
+            );
+        }
+
+        // ===========================
+        // INITIALIZATION & CORE LOGIC
+        // ===========================
+
+        function createGem(col, row, specificType = null) {
+            // Ensure we don't create an immediate match on start
+            let type;
+            do {
+                type = specificType !== null ? specificType : Math.floor(Math.random() * CONFIG.colors.length);
+            } while (specificType === null && checkInitialMatch(col, row, type));
+
+            const material = new THREE.MeshStandardMaterial({ 
+                color: CONFIG.colors[type],
+                roughness: 0.3,
+                metalness: 0.2
+            });
+            const mesh = new THREE.Mesh(gemGeometry, material);
+            const pos = gridToWorld(col, row);
+            mesh.position.copy(pos);
+            // Store target position for animation system
+            mesh.userData.targetPos = pos.clone(); 
+            
+            scene.add(mesh);
+
+            return { type: type, mesh: mesh, isLocked: false };
+        }
+
+        // Helper to prevent matches during initial board generation
+        function checkInitialMatch(col, row, type) {
+            // Check left
+            if (col >= 2 && grid[col-1][row] && grid[col-1][row].type === type && 
+                grid[col-2][row] && grid[col-2][row].type === type) return true;
+            // Check up
+            if (row >= 2 && grid[col][row-1] && grid[col][row-1].type === type &&
+                grid[col][row-2] && grid[col][row-2].type === type) return true;
+            return false;
+        }
+
+        function initBoard() {
+            for (let c = 0; c < CONFIG.cols; c++) {
+                for (let r = 0; r < CONFIG.rows; r++) {
+                    grid[c][r] = createGem(c, r);
+                }
+            }
+        }
+
+        // --- Matching Logic ---
+
+        function findMatches() {
+            let matches = new Set();
+
+            // Horizontal matches
+            for (let r = 0; r < CONFIG.rows; r++) {
+                for (let c = 0; c < CONFIG.cols - 2; c++) {
+                    let gem1 = grid[c][r];
+                    let gem2 = grid[c+1][r];
+                    let gem3 = grid[c+2][r];
+                    if (gem1 && gem2 && gem3 && gem1.type === gem2.type && gem1.type === gem3.type) {
+                        matches.add(gem1); matches.add(gem2); matches.add(gem3);
+                    }
+                }
+            }
+
+            // Vertical matches
+            for (let c = 0; c < CONFIG.cols; c++) {
+                for (let r = 0; r < CONFIG.rows - 2; r++) {
+                    let gem1 = grid[c][r];
+                    let gem2 = grid[c][r+1];
+                    let gem3 = grid[c][r+2];
+                    if (gem1 && gem2 && gem3 && gem1.type === gem2.type && gem1.type === gem3.type) {
+                        matches.add(gem1); matches.add(gem2); matches.add(gem3);
+                    }
+                }
+            }
+            return Array.from(matches);
+        }
+
+        // --- Resolution Loop (Clearing, Falling, Refilling) ---
+
+        async function resolveState() {
+            isAnimating = true;
+            let matches = findMatches();
+            
+            while (matches.length > 0) {
+                // 1. Remove matched gems visually
+                matches.forEach(gem => {
+                    scene.remove(gem.mesh);
+                    gem.mesh.geometry.dispose();
+                    gem.mesh.material.dispose();
+                    
+                    // Find grid coords to nullify
+                    for(let c=0; c<CONFIG.cols; c++) {
+                       for(let r=0; r<CONFIG.rows; r++) {
+                           if(grid[c][r] === gem) {
+                               grid[c][r] = null;
+                           }
+                       } 
+                    }
+                });
+                
+                score += matches.length * 10;
+                scoreElement.innerText = `Score: ${score}`;
+
+                await delay(100); // Small pause before falling starts
+
+                // 2. Make gems fall down
+                let moved;
+                do {
+                    moved = false;
+                    for (let c = 0; c < CONFIG.cols; c++) {
+                        for (let r = CONFIG.rows - 1; r > 0; r--) {
+                            if (grid[c][r] === null && grid[c][r - 1] !== null) {
+                                // Move gem down in data grid
+                                grid[c][r] = grid[c][r - 1];
+                                grid[c][r - 1] = null;
+                                // Set new visual target position
+                                grid[c][r].mesh.userData.targetPos = gridToWorld(c, r);
+                                moved = true;
+                            }
+                        }
+                    }
+                    // Wait for falling animations to complete before next fall step
+                    await waitForAnimations(); 
+                } while (moved);
+
+                // 3. Refill top rows
+                for (let c = 0; c < CONFIG.cols; c++) {
+                    for (let r = 0; r < CONFIG.rows; r++) {
+                        if (grid[c][r] === null) {
+                            grid[c][r] = createGem(c, r);
+                            // Start new gems above the board so they fall in
+                            grid[c][r].mesh.position.y += CONFIG.spacing * 2; 
+                        }
+                    }
+                }
+                await waitForAnimations();
+
+                // 4. Check for new matches resulting from the fall
+                matches = findMatches();
+            }
+            isAnimating = false;
+        }
+
+
+        // ===========================
+        // INTERACTION & ANIMATION UTILS
+        // ===========================
+
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        window.addEventListener('click', onMouseClick);
+
+        function onMouseClick(event) {
+            if (isAnimating) return;
+
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(scene.children);
+
+            if (intersects.length > 0) {
+                const clickedMesh = intersects[0].object;
+                let clickedGemPos = null;
+
+                // Find gem coordinates
+                outer: for (let c = 0; c < CONFIG.cols; c++) {
+                    for (let r = 0; r < CONFIG.rows; r++) {
+                        if (grid[c][r] && grid[c][r].mesh === clickedMesh) {
+                            clickedGemPos = { c, r };
+                            break outer;
+                        }
+                    }
+                }
+
+                if (!clickedGemPos) return;
+
+                if (!selectedGem) {
+                    // First click
+                    selectedGem = clickedGemPos;
+                    // Visual feedback (optional: highlight selected)
+                    grid[selectedGem.c][selectedGem.r].mesh.material.emissive.setHex(0x333333);
+                } else {
+                    // Second click
+                    const gem1Pos = selectedGem;
+                    const gem2Pos = clickedGemPos;
+                    
+                    // Remove highlight
+                    grid[gem1Pos.c][gem1Pos.r].mesh.material.emissive.setHex(0x000000);
+                    selectedGem = null;
+
+                    // Check adjacency (no diagonals)
+                    const dC = Math.abs(gem1Pos.c - gem2Pos.c);
+                    const dR = Math.abs(gem1Pos.r - gem2Pos.r);
+                    if ((dC === 1 && dR === 0) || (dC === 0 && dR === 1)) {
+                        trySwap(gem1Pos, gem2Pos);
+                    }
+                }
+            } else {
+                // Deselect if clicking background
+                if(selectedGem) {
+                     grid[selectedGem.c][selectedGem.r].mesh.material.emissive.setHex(0x000000);
+                     selectedGem = null;
+                }
+            }
+        }
+
+        async function trySwap(pos1, pos2) {
+            isAnimating = true;
+
+            // 1. Swap data in grid
+            let temp = grid[pos1.c][pos1.r];
+            grid[pos1.c][pos1.r] = grid[pos2.c][pos2.r];
+            grid[pos2.c][pos2.r] = temp;
+
+            // 2. Set new visual targets
+            grid[pos1.c][pos1.r].mesh.userData.targetPos = gridToWorld(pos1.c, pos1.r);
+            grid[pos2.c][pos2.r].mesh.userData.targetPos = gridToWorld(pos2.c, pos2.r);
+
+            await waitForAnimations();
+
+            // 3. Check if valid swap
+            if (findMatches().length > 0) {
+                resolveState();
+            } else {
+                // Swap back data
+                temp = grid[pos1.c][pos1.r];
+                grid[pos1.c][pos1.r] = grid[pos2.c][pos2.r];
+                grid[pos2.c][pos2.r] = temp;
+
+                // Swap back visuals
+                grid[pos1.c][pos1.r].mesh.userData.targetPos = gridToWorld(pos1.c, pos1.r);
+                grid[pos2.c][pos2.r].mesh.userData.targetPos = gridToWorld(pos2.c, pos2.r);
+                await waitForAnimations();
+                isAnimating = false;
+            }
+        }
+
+        // --- Simple Animation System ---
+
+        function delay(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        // Wait until all gems have reached their target positions
+        function waitForAnimations() {
+            return new Promise(resolve => {
+                const check = () => {
+                    let stillMoving = false;
+                    for(let c=0; c<CONFIG.cols; c++) {
+                        for(let r=0; r<CONFIG.rows; r++) {
+                            if(grid[c][r] && grid[c][r].mesh.userData.targetPos) {
+                                if(grid[c][r].mesh.position.distanceToSquared(grid[c][r].mesh.userData.targetPos) > 0.01) {
+                                    stillMoving = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (!stillMoving) resolve();
+                    else requestAnimationFrame(check);
+                };
+                check();
+            });
+        }
+
+
+        // ===========================
+        // MAIN LOOPS
+        // ===========================
+
+        window.addEventListener('resize', onWindowResize);
+
+        function onWindowResize() {
+            const aspect = window.innerWidth / window.innerHeight;
+            camera.left = frustumSize * aspect / -2;
+            camera.right = frustumSize * aspect / 2;
+            camera.top = frustumSize / 2;
+            camera.bottom = frustumSize / -2;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Simple Linear Interpolation (Lerp) for movement
+            // Every frame, move gems 15% closer to their target position
+            for(let c=0; c<CONFIG.cols; c++) {
+                 for(let r=0; r<CONFIG.rows; r++) {
+                     const gem = grid[c][r];
+                     if(gem && gem.mesh.userData.targetPos) {
+                         gem.mesh.position.lerp(gem.mesh.userData.targetPos, CONFIG.animSpeed);
+                     }
+                 }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Start game
+        initBoard();
+        animate();
+        // Check initial state in case random generation made matches
+        resolveState(); 
+
+    </script>
+</body>
+</html>
